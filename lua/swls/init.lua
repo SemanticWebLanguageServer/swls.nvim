@@ -132,7 +132,7 @@ local defaults = {
     cmd = nil,
     filetypes = { "turtle", "trig", "sparql", "jsonld" },
     root_dir = nil,
-    init_options = { sparql = false },
+    init_options = { },
     settings = {},
     inlay_hints = true,
     -- Check GitHub for a newer release on every startup.
