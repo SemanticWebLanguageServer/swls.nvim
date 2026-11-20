@@ -10,6 +10,7 @@ Provides filetype detection for Turtle, SPARQL, and JSON-LD files and starts the
 - Auto-starts `swls` on matching buffers
 - Inlay hints enabled by default
 - `:checkhealth swls` to verify your setup
+- Downloads and updates the `swls` binary from GitHub releases (`:SwlsUpdate` checks on demand)
 
 ## Requirements
 
@@ -82,6 +83,13 @@ require("swls").setup({
 
     -- Enable inlay hints on attach.
     inlay_hints = true,
+
+    -- Check GitHub for a newer swls binary on startup.
+    check_update = true,
+
+    -- Which releases to install and update to: "stable" (swls-vX.Y.Z tags)
+    -- or "nightly" (rolling build of main, rebuilt on every push).
+    channel = "stable",
 })
 ```
 
@@ -92,6 +100,14 @@ Run with `RUST_BACKTRACE` for debugging:
 ```lua
 require("swls").setup({
     cmd = { "sh", "-c", "RUST_BACKTRACE=1 swls" },
+})
+```
+
+Follow the nightly build of `main` (run `:SwlsUpdate` to pull the newest one):
+
+```lua
+require("swls").setup({
+    channel = "nightly",
 })
 ```
 
