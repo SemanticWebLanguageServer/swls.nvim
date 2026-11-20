@@ -6,6 +6,8 @@ function M.check()
     local swls = require("swls")
     local bin = swls._managed_path()
 
+    vim.health.info("release channel: " .. (swls._channel or "stable (setup() not called)"))
+
     if vim.fn.filereadable(bin) == 1 then
         vim.health.ok("managed binary: " .. bin)
         local version = vim.trim(vim.fn.system({ bin, "--version" }))

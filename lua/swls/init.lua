@@ -40,30 +40,67 @@ local function version_of(cmd)
     return out:match(VERSION_PATTERN) or ""
 end
 
-local function get_latest_release(cb)
-    local url = "https://api.github.com/repos/" .. REPO .. "/releases"
+-- `swls --version` may report a bare semver ("0.3.0") while stable release
+-- tags are prefixed ("swls-v0.3.0"); compare them without the prefix.
+local function normalize_version(v)
+    return (v:gsub("^swls%-v", ""))
+end
+
+local function github_api(path, cb)
+    local url = "https://api.github.com/repos/" .. REPO .. path
     local done = false
+    local function finish(value, err)
+        if done then return end
+        done = true
+        cb(value, err)
+    end
     vim.fn.jobstart({ "curl", "-sfL", "--max-time", "10", url }, {
         stdout_buffered = true,
         on_stdout = function(_, data)
             local body = table.concat(data, "\n")
             if body:match("^%s*$") then return end
-            local ok, releases = pcall(vim.json.decode, body)
-            if not ok or type(releases) ~= "table" then return end
-            for _, r in ipairs(releases) do
-                if r.tag_name and r.tag_name:match("^swls%-") then
-                    done = true
-                    cb(r.tag_name, nil)
-                    return
-                end
+            local ok, value = pcall(vim.json.decode, body)
+            if ok and type(value) == "table" then
+                finish(value, nil)
+            else
+                finish(nil, "invalid response from " .. url)
             end
         end,
         on_exit = function(_, code)
-            if not done then
-                cb(nil, "curl exited " .. code)
-            end
+            finish(nil, "curl exited " .. code .. " for " .. url)
         end,
     })
+end
+
+-- Calls `cb(release, err)` with `release = { tag = ..., version = ... }`:
+-- `tag` is what the assets are downloaded from, `version` what the binary
+-- from that release reports.
+local function get_latest_release(channel, cb)
+    if channel == "nightly" then
+        -- A single rolling release, rebuilt on every push to main. Its name is
+        -- `nightly-<short sha>`, which is also what the binary reports.
+        github_api("/releases/tags/nightly", function(release, err)
+            if err then return cb(nil, err) end
+            if type(release.name) ~= "string" then
+                return cb(nil, "nightly release has no name")
+            end
+            cb({ tag = "nightly", version = release.name }, nil)
+        end)
+        return
+    end
+
+    github_api("/releases", function(releases, err)
+        if err then return cb(nil, err) end
+        -- Only main binary releases (swls-vX.Y.Z), not sub-crate tags
+        -- (swls-lang-*, swls-core-*), and no pre-releases.
+        for _, r in ipairs(releases) do
+            if type(r.tag_name) == "string" and r.tag_name:match("^swls%-v%d")
+                and r.prerelease ~= true and r.draft ~= true then
+                return cb({ tag = r.tag_name, version = normalize_version(r.tag_name) }, nil)
+            end
+        end
+        cb(nil, "no stable release found")
+    end)
 end
 
 local function download_release(version, cb)
@@ -96,12 +133,29 @@ local function download_release(version, cb)
     })
 end
 
-local function check_for_updates()
+local function check_for_updates(channel, verbose)
     local bin = managed_path()
-    local current = vim.fn.filereadable(bin) == 1 and version_of(bin) or ""
+    local current = vim.fn.filereadable(bin) == 1 and normalize_version(version_of(bin)) or ""
 
-    get_latest_release(function(latest, err)
-        if err or current == latest then return end
+    get_latest_release(channel, function(release, err)
+        if err then
+            if verbose then
+                vim.schedule(function()
+                    vim.notify("swls: update check failed: " .. err, vim.log.levels.WARN)
+                end)
+            end
+            return
+        end
+        local latest = release.version
+        if current == latest then
+            if verbose then
+                vim.schedule(function()
+                    vim.notify("swls: already at latest " .. channel .. " version (" .. current .. ")",
+                        vim.log.levels.INFO)
+                end)
+            end
+            return
+        end
 
         local is_fresh = current == ""
         local prompt = is_fresh
@@ -111,7 +165,7 @@ local function check_for_updates()
         vim.schedule(function()
             vim.ui.select({ "Yes", "No" }, { prompt = prompt }, function(choice)
                 if choice ~= "Yes" then return end
-                download_release(latest, function(_, dl_err)
+                download_release(release.tag, function(_, dl_err)
                     if dl_err then
                         vim.notify("swls: install failed: " .. dl_err, vim.log.levels.ERROR)
                         return
@@ -137,10 +191,24 @@ local defaults = {
     inlay_hints = true,
     -- Check GitHub for a newer release on every startup.
     check_update = true,
+    -- Which releases to install and update to:
+    --   "stable"  tagged releases (swls-vX.Y.Z)
+    --   "nightly" rolling build of main, rebuilt on every push
+    channel = "stable",
 }
 
 function M.setup(opts)
     opts = vim.tbl_deep_extend("force", defaults, opts or {})
+    if opts.channel ~= "stable" and opts.channel ~= "nightly" then
+        vim.notify("swls: unknown channel '" .. tostring(opts.channel) .. "', using 'stable'",
+            vim.log.levels.WARN)
+        opts.channel = "stable"
+    end
+    M._channel = opts.channel
+
+    vim.api.nvim_create_user_command("SwlsUpdate", function()
+        check_for_updates(opts.channel, true)
+    end, { desc = "Check GitHub for a newer swls binary on the configured channel" })
 
     local function resolve_cmd()
         if opts.cmd then return opts.cmd end
@@ -151,7 +219,7 @@ function M.setup(opts)
     end
 
     if opts.check_update then
-        vim.defer_fn(check_for_updates, 500)
+        vim.defer_fn(function() check_for_updates(opts.channel, false) end, 500)
     end
 
     vim.api.nvim_create_autocmd("FileType", {
